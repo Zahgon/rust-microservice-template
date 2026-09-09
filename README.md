@@ -268,6 +268,7 @@ Validation and request parsing errors are returned as problem-details responses,
 
 Normal request flow now uses explicit application-layer error categories instead of cross-layer `anyhow` propagation.
 
+- `404 Not Found` is returned when a path parameter is not a valid UUID, for example `GET /api/v1/to-do-items/not-a-uuid`, matching the behaviour of earlier Actix-based releases.
 - `404 Not Found` is returned for missing to-do items.
 - `412 Precondition Failed` is returned for optimistic concurrency conflicts.
 - `500 Internal Server Error` is sanitized to a stable generic problem-details response and does not expose database or driver internals.
@@ -334,7 +335,7 @@ Future breaking API changes should be introduced under a new version prefix (for
 ## Technologies used
 
 - [Rust](https://github.com/rust-lang/rust): The Rust Programming Language.
-- [Actix](https://github.com/actix/actix-web): Actix Web is a powerful, pragmatic, and extremely fast web framework for Rust.
+- [Axum](https://github.com/tokio-rs/axum): Axum is an ergonomic and modular web framework for Rust built with Tokio, Tower, and Hyper.
 - [rust-postgres](https://github.com/sfackler/rust-postgres): PostgreSQL support for Rust.
 - [testcontainers-rs](https://github.com/testcontainers/testcontainers-rs): Testcontainers-rs is the official Rust language fork of http://testcontainers.org.
 - [utoipa](https://github.com/juhaku/utoipa): Code first and compile time generated OpenAPI documentation for Rust APIs.

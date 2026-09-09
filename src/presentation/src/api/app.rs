@@ -1,14 +1,22 @@
-use actix_web::http::header::{ETAG, IF_MATCH};
-use actix_web::web::Data;
-use actix_web::{delete, post, put};
-use actix_web::{get, web, HttpResponse, Result};
 use application::{
     Audit, DeleteToDoItemCommand, GetAllToDoItemsQuery, GetDeletedToDoItemForAuditQuery,
     GetToDoItemQuery, ToDoItemService,
 };
+use axum::http::header::{ETAG, IF_MATCH};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
+// Load-bearing despite looking unused: the `#[utoipa::path]` attributes below refer
+// to `Uuid` when describing the `id` path parameter, and utoipa resolves it lazily,
+// so rustc reports the import as unused. Removing it does not fail the build - it
+// silently drops `schema: {format: uuid, type: string}` from those parameters in the
+// generated OpenAPI document, which was caught by comparing the served document
+// before and after.
+#[allow(unused_imports)]
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::config::{JsonPayload, PathUuid, QueryPayload};
 use crate::errors::HttpError;
 use crate::requests::{
     parse_audit_token_header, parse_optional_delete_actor_id, CreateToDoItemRequest,
@@ -22,6 +30,8 @@ const TODO: &str = "todo";
 
 /// Retrieves a paginated list of active to-do items with optional text search.
 #[utoipa::path(
+    get,
+    path = "",
     context_path = "/api/v1/to-do-items",
     tag = TODO,
     responses(
@@ -30,11 +40,10 @@ const TODO: &str = "todo";
     ),
     params(GetAllToDoItemsQueryRequest)
 )]
-#[get("")]
 pub async fn get_all(
-    service: Data<ToDoItemService>,
-    query: web::Query<GetAllToDoItemsQueryRequest>,
-) -> Result<HttpResponse, HttpError> {
+    Extension(service): Extension<ToDoItemService>,
+    QueryPayload(query): QueryPayload<GetAllToDoItemsQueryRequest>,
+) -> Result<Response, HttpError> {
     query.validate()?;
     query.validate_search().map_err(HttpError::bad_request)?;
     query.validate_sort().map_err(HttpError::bad_request)?;
@@ -42,11 +51,13 @@ pub async fn get_all(
     let query: GetAllToDoItemsQuery = query.to_query().map_err(HttpError::bad_request)?;
     let data = ToDoItemsPageResponse::from(handler.execute(query).await?);
 
-    Ok(HttpResponse::Ok().json(data))
+    Ok(Json(data).into_response())
 }
 
 /// Retrieves a to-do item by Id.
 #[utoipa::path(
+    get,
+    path = "/{id}",
     context_path = "/api/v1/to-do-items",
     tag = TODO,
     responses(
@@ -58,23 +69,22 @@ pub async fn get_all(
         ("id" = Uuid, Path, description = "Id of the to-do item")
     ),
 )]
-#[get("/{id}")]
 pub async fn get_by_id(
-    service: Data<ToDoItemService>,
-    id: web::Path<Uuid>,
-) -> Result<HttpResponse, HttpError> {
+    Extension(service): Extension<ToDoItemService>,
+    PathUuid(id): PathUuid,
+) -> Result<Response, HttpError> {
     let handler = service.get_query_handler();
-    let item = handler
-        .execute(GetToDoItemQuery::new(id.into_inner()))
-        .await?;
+    let item = handler.execute(GetToDoItemQuery::new(id)).await?;
     let etag = format_etag(item.version);
     let data = ToDoItemResponse::from(item);
 
-    Ok(HttpResponse::Ok().insert_header((ETAG, etag)).json(data))
+    Ok(([(ETAG, etag)], Json(data)).into_response())
 }
 
 /// Creates a new to-do item.
 #[utoipa::path(
+    post,
+    path = "",
     context_path = "/api/v1/to-do-items",
     tag = TODO,
     responses(
@@ -83,20 +93,21 @@ pub async fn get_by_id(
     ),
     request_body = CreateToDoItemRequest,
 )]
-#[post("")]
 pub async fn create(
-    service: Data<ToDoItemService>,
-    item: web::Json<CreateToDoItemRequest>,
-) -> Result<HttpResponse, HttpError> {
+    Extension(service): Extension<ToDoItemService>,
+    JsonPayload(item): JsonPayload<CreateToDoItemRequest>,
+) -> Result<Response, HttpError> {
     item.validate()?;
     let handler = service.create_command_handler();
     let data = handler.execute(item.to_command()).await?;
 
-    Ok(HttpResponse::Created().json(data))
+    Ok((StatusCode::CREATED, Json(data)).into_response())
 }
 
 /// Updates a to-do item by Id.
 #[utoipa::path(
+    put,
+    path = "/{id}",
     context_path = "/api/v1/to-do-items",
     tag = TODO,
     responses(
@@ -112,27 +123,25 @@ pub async fn create(
     ),
     request_body = UpdateToDoItemRequest,
 )]
-#[put("/{id}")]
 pub async fn update(
-    service: Data<ToDoItemService>,
-    id: web::Path<Uuid>,
-    request: actix_web::HttpRequest,
-    item: web::Json<UpdateToDoItemRequest>,
-) -> Result<HttpResponse, HttpError> {
+    Extension(service): Extension<ToDoItemService>,
+    PathUuid(id): PathUuid,
+    headers: HeaderMap,
+    JsonPayload(item): JsonPayload<UpdateToDoItemRequest>,
+) -> Result<Response, HttpError> {
     item.validate()?;
     let handler = service.update_command_handler();
-    let version = parse_if_match(&request)?;
-    let id = id.into_inner();
+    let version = parse_if_match(&headers)?;
 
     handler.execute(item.to_command(id, version)).await?;
 
-    Ok(HttpResponse::Ok()
-        .insert_header((ETAG, format_etag(version + 1)))
-        .finish())
+    Ok(([(ETAG, format_etag(version + 1))], StatusCode::OK).into_response())
 }
 
 /// Deletes a to-do item by Id.
 #[utoipa::path(
+    delete,
+    path = "/{id}",
     context_path = "/api/v1/to-do-items",
     tag = TODO,
     responses(
@@ -143,24 +152,25 @@ pub async fn update(
         ("id", description = "Id of the to-do item to delete")
     )
 )]
-#[delete("/{id}")]
 pub async fn delete(
-    service: Data<ToDoItemService>,
-    id: web::Path<Uuid>,
-    request: actix_web::HttpRequest,
-) -> Result<HttpResponse, HttpError> {
-    let deleted_by = parse_optional_delete_actor_id(&request).map_err(HttpError::bad_request)?;
+    Extension(service): Extension<ToDoItemService>,
+    PathUuid(id): PathUuid,
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
+    let deleted_by = parse_optional_delete_actor_id(&headers).map_err(HttpError::bad_request)?;
     let handler = service.delete_command_handler();
 
     handler
-        .execute(DeleteToDoItemCommand::new(id.into_inner(), deleted_by))
+        .execute(DeleteToDoItemCommand::new(id, deleted_by))
         .await?;
 
-    Ok(HttpResponse::from(HttpResponse::Ok()))
+    Ok(StatusCode::OK.into_response())
 }
 
 /// Retrieves a deleted to-do item by Id for audit purposes.
 #[utoipa::path(
+    get,
+    path = "/{id}",
     context_path = "/api/v1/audit/to-do-items",
     tag = TODO,
     responses(
@@ -174,14 +184,13 @@ pub async fn delete(
         ("X-Audit-Token" = String, Header, description = "Audit access token")
     ),
 )]
-#[get("/{id}")]
 pub async fn get_deleted_by_id_for_audit(
-    service: Data<ToDoItemService>,
-    audit: Data<Audit>,
-    id: web::Path<Uuid>,
-    request: actix_web::HttpRequest,
-) -> Result<HttpResponse, HttpError> {
-    let provided_token = parse_audit_token_header(&request)
+    Extension(service): Extension<ToDoItemService>,
+    Extension(audit): Extension<Audit>,
+    PathUuid(id): PathUuid,
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
+    let provided_token = parse_audit_token_header(&headers)
         .ok_or_else(|| HttpError::unauthorized("missing X-Audit-Token header"))?;
     let configured_token = audit
         .token
@@ -194,11 +203,11 @@ pub async fn get_deleted_by_id_for_audit(
 
     let handler = service.get_deleted_for_audit_query_handler();
     let item = handler
-        .execute(GetDeletedToDoItemForAuditQuery::new(id.into_inner()))
+        .execute(GetDeletedToDoItemForAuditQuery::new(id))
         .await?;
     let data = AuditToDoItemResponse::from(item);
 
-    Ok(HttpResponse::Ok().json(data))
+    Ok(Json(data).into_response())
 }
 
 fn format_etag(version: i32) -> String {
@@ -206,9 +215,8 @@ fn format_etag(version: i32) -> String {
 }
 
 #[allow(clippy::result_large_err)]
-fn parse_if_match(request: &actix_web::HttpRequest) -> Result<i32, HttpError> {
-    let raw = request
-        .headers()
+fn parse_if_match(headers: &HeaderMap) -> Result<i32, HttpError> {
+    let raw = headers
         .get(IF_MATCH)
         .ok_or_else(|| HttpError::precondition_required("missing If-Match header"))?
         .to_str()

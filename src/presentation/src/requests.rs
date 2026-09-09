@@ -1,8 +1,8 @@
-use actix_web::HttpRequest;
 use application::{
     CreateToDoItemCommand, GetAllToDoItemsQuery, SortDirection, ToDoItemSort, ToDoItemSortField,
     UpdateToDoItemCommand,
 };
+use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -188,17 +188,16 @@ fn parse_sort(value: &str) -> Result<ToDoItemSort, String> {
 pub const AUDIT_TOKEN_HEADER: &str = "X-Audit-Token";
 pub const DELETE_ACTOR_ID_HEADER: &str = "X-Actor-Id";
 
-pub fn parse_audit_token_header(request: &HttpRequest) -> Option<String> {
-    request
-        .headers()
+pub fn parse_audit_token_header(headers: &HeaderMap) -> Option<String> {
+    headers
         .get(AUDIT_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }
 
-pub fn parse_optional_delete_actor_id(request: &HttpRequest) -> Result<Option<Uuid>, String> {
-    let Some(raw_value) = request.headers().get(DELETE_ACTOR_ID_HEADER) else {
+pub fn parse_optional_delete_actor_id(headers: &HeaderMap) -> Result<Option<Uuid>, String> {
+    let Some(raw_value) = headers.get(DELETE_ACTOR_ID_HEADER) else {
         return Ok(None);
     };
 
@@ -218,6 +217,7 @@ pub fn parse_optional_delete_actor_id(request: &HttpRequest) -> Result<Option<Uu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::{HeaderName, HeaderValue};
 
     #[test]
     fn create_request_rejects_blank_title() {
@@ -355,20 +355,26 @@ mod tests {
 
     #[test]
     fn parse_optional_delete_actor_id_rejects_invalid_uuid() {
-        let request = actix_web::test::TestRequest::default()
-            .insert_header((DELETE_ACTOR_ID_HEADER, "bad-uuid"))
-            .to_http_request();
+        let headers = header_map(DELETE_ACTOR_ID_HEADER, "bad-uuid");
 
-        assert!(parse_optional_delete_actor_id(&request).is_err());
+        assert!(parse_optional_delete_actor_id(&headers).is_err());
     }
 
     #[test]
     fn parse_audit_token_header_returns_trimmed_value() {
-        let request = actix_web::test::TestRequest::default()
-            .insert_header((AUDIT_TOKEN_HEADER, "  token  "))
-            .to_http_request();
+        let headers = header_map(AUDIT_TOKEN_HEADER, "  token  ");
 
-        let token = parse_audit_token_header(&request);
+        let token = parse_audit_token_header(&headers);
         assert_eq!(token.as_deref(), Some("token"));
+    }
+
+    fn header_map(name: &str, value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_bytes(name.as_bytes()).expect("header name should be valid"),
+            HeaderValue::from_str(value).expect("header value should be valid"),
+        );
+
+        headers
     }
 }

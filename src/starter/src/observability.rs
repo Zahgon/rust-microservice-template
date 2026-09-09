@@ -1,10 +1,10 @@
-use actix_web::body::MessageBody;
-use actix_web::dev::{ServiceRequest, ServiceResponse};
-use actix_web::http::header::{HeaderName, HeaderValue};
-use actix_web::middleware::Next;
-use actix_web::Error;
 use anyhow::{anyhow, Context, Result};
 use application::Settings;
+use axum::extract::{MatchedPath, Request};
+use axum::http::header::{HeaderName, HeaderValue};
+use axum::http::StatusCode;
+use axum::middleware::Next;
+use axum::response::Response;
 use metrics::{counter, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::sync::OnceLock;
@@ -73,21 +73,29 @@ pub fn init_prometheus_recorder() -> Result<PrometheusHandle> {
 }
 
 pub async fn observability_middleware(
-    request: ServiceRequest,
-    next: Next<impl MessageBody>,
-) -> Result<ServiceResponse<impl MessageBody>, Error> {
+    request: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, &'static str)> {
     let config = request
-        .app_data::<actix_web::web::Data<ObservabilityConfig>>()
+        .extensions()
+        .get::<ObservabilityConfig>()
         .cloned()
-        .ok_or_else(|| {
-            actix_web::error::ErrorInternalServerError("missing observability config")
-        })?;
+        .ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "missing observability config",
+        ))?;
 
     let start = Instant::now();
     let request_id = extract_or_generate_request_id(&request, &config.request_id_header_name);
-    let request_path = request.path().to_string();
+    let request_path = request.uri().path().to_string();
+    let method = request.method().as_str().to_string();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|matched_path| matched_path.as_str().to_string())
+        .unwrap_or_else(|| request_path.clone());
 
-    let mut response = next.call(request).await?;
+    let mut response = next.run(request).await;
     let status = response.status();
 
     if let Ok(value) = HeaderValue::from_str(&request_id) {
@@ -96,11 +104,6 @@ pub async fn observability_middleware(
             .insert(config.request_id_response_name.clone(), value);
     }
 
-    let route = response
-        .request()
-        .match_pattern()
-        .unwrap_or_else(|| request_path.clone());
-    let method = response.request().method().as_str().to_string();
     let status_class = status_class(status.as_u16());
     let duration_seconds = start.elapsed().as_secs_f64();
     let is_metrics_endpoint = request_path == config.metrics_path;
@@ -143,7 +146,7 @@ pub async fn observability_middleware(
     Ok(response)
 }
 pub fn extract_or_generate_request_id(
-    request: &ServiceRequest,
+    request: &Request,
     request_id_header_name: &HeaderName,
 ) -> String {
     request
@@ -169,37 +172,42 @@ fn status_class(code: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix_web::test;
-    use actix_web::{web, App, HttpResponse};
+    use axum::body::Body;
+    use axum::http::Request as HttpRequest;
+    use axum::routing::get;
+    use axum::{middleware::from_fn, Extension, Router};
+    use tower::ServiceExt;
 
-    #[actix_web::test]
+    #[tokio::test]
     async fn extract_or_generate_request_id_preserves_header_value() {
-        let request = test::TestRequest::default()
-            .insert_header(("x-request-id", "abc-123"))
-            .to_srv_request();
+        let request = HttpRequest::builder()
+            .header("x-request-id", "abc-123")
+            .body(Body::empty())
+            .unwrap();
 
         let request_id =
             extract_or_generate_request_id(&request, &HeaderName::from_static("x-request-id"));
         assert_eq!(request_id, "abc-123");
     }
 
-    #[actix_web::test]
+    #[tokio::test]
     async fn extract_or_generate_request_id_generates_for_blank_or_missing() {
-        let missing = test::TestRequest::default().to_srv_request();
+        let missing = HttpRequest::builder().body(Body::empty()).unwrap();
         let missing_id =
             extract_or_generate_request_id(&missing, &HeaderName::from_static("x-request-id"));
         assert!(!missing_id.is_empty());
 
-        let blank = test::TestRequest::default()
-            .insert_header(("x-request-id", " "))
-            .to_srv_request();
+        let blank = HttpRequest::builder()
+            .header("x-request-id", " ")
+            .body(Body::empty())
+            .unwrap();
         let blank_id =
             extract_or_generate_request_id(&blank, &HeaderName::from_static("x-request-id"));
         assert!(!blank_id.is_empty());
         assert_ne!(blank_id, " ");
     }
 
-    #[actix_web::test]
+    #[tokio::test]
     async fn middleware_sets_response_request_id_header() {
         let config = ObservabilityConfig {
             request_id_header_name: HeaderName::from_static("x-request-id"),
@@ -208,19 +216,13 @@ mod tests {
             metrics_path: "/metrics".to_string(),
         };
 
-        let app = test::init_service(
-            App::new()
-                .app_data(web::Data::new(config))
-                .wrap(actix_web::middleware::from_fn(observability_middleware))
-                .route(
-                    "/ok",
-                    web::get().to(|| async { HttpResponse::Ok().finish() }),
-                ),
-        )
-        .await;
+        let app = Router::new()
+            .route("/ok", get(|| async { StatusCode::OK }))
+            .layer(from_fn(observability_middleware))
+            .layer(Extension(config));
 
-        let request = test::TestRequest::get().uri("/ok").to_request();
-        let response = test::call_service(&app, request).await;
+        let request = HttpRequest::get("/ok").body(Body::empty()).unwrap();
+        let response = app.oneshot(request).await.unwrap();
         assert!(response.headers().contains_key("x-request-id"));
     }
 }

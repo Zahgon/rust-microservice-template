@@ -1,11 +1,12 @@
 use ctor::dtor;
+use std::thread::JoinHandle;
 use std::time::Duration;
 use testcontainers::core::IntoContainerPort;
 use testcontainers::{ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use tokio::runtime::Builder;
 use tokio::sync::OnceCell;
-use tokio::task::JoinHandle;
 
 const CONFIG_FILE_PATH: &str = "./../../";
 
@@ -33,11 +34,20 @@ impl Server {
             .await
             .unwrap();
 
-        let server_handle = tokio::spawn(async move {
-            let server = starter::run_with_config(CONFIG_FILE_PATH)
-                .await
-                .expect("Failed to bind address");
-            let _server_task = tokio::spawn(server);
+        // The server is driven by a runtime of its own so that it outlives the
+        // per-test runtimes created by `#[tokio::test]`.
+        let server_handle = std::thread::spawn(move || {
+            let runtime = Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build server runtime");
+
+            runtime.block_on(async {
+                let server = starter::run_with_config(CONFIG_FILE_PATH)
+                    .await
+                    .expect("Failed to bind address");
+                server.await.expect("Failed to run server");
+            });
         });
         tokio::time::sleep(Duration::from_secs(1)).await;
         Server {

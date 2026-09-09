@@ -2,7 +2,7 @@
 
 ### 1. **Memory Management & Concurrency**
 - **Replace `Rc<>` with `Arc<>`** in handlers - `Rc` is not thread-safe and shouldn't be used in async contexts
-- **Use dependency injection container** like `actix-web`'s `Data<>` more consistently
+- **Use dependency injection container** like `axum`'s `Extension<>` more consistently
 - **Consider using `Box<dyn Trait>` instead of `Rc<dyn Trait>`** for better performance
 
 ### 2. **Error Handling & Resilience**

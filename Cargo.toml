@@ -11,14 +11,15 @@ resolver = "2"
 [workspace.dependencies]
 
 # Web
-actix-web = "4.13.0"
-problem_details = { version = "0.9.0", features = ["actix", "json"] }
+axum = "0.8.9"
+problem_details = { version = "0.9.0", features = ["axum", "json"] }
 http = "1.4.0"
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.6.11", features = ["trace"] }
 
 # OpenAPI
-utoipa = { version = "5.4.0", features = ["actix_extras", "uuid", "chrono"] }
-utoipa-actix-web = "0.1.2"
-utoipa-swagger-ui = { version = "9.0.2", features = ["actix-web"] }
+utoipa = { version = "5.4.0", features = ["axum_extras", "uuid", "chrono"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 
 # Serialization
 serde = { version = "1.0.228", features = ["derive"] }
@@ -39,7 +40,6 @@ log = "0.4.29"
 env_logger = "0.11.9"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt", "json"] }
-tracing-actix-web = "0.7.19"
 metrics = "0.24.2"
 metrics-exporter-prometheus = "0.18.1"
 

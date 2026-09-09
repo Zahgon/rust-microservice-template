@@ -1,6 +1,5 @@
 use crate::errors::Error::{InternalError, ItemNotFound, VersionConflict};
 use crate::DbPool;
-use actix_web::web::Data;
 use application::{
     ApplicationError, ApplicationResult, GetAllToDoItemsQuery, PaginatedResult, SortDirection,
     ToDoItemCommandRepository, ToDoItemQueryRepository, ToDoItemSortField,
@@ -19,11 +18,12 @@ use domain::to_do_items::dsl::{
     updated_at as item_updated_at, version as item_version,
 };
 use domain::ToDoItem;
+use std::sync::Arc;
 use tokio::task;
 use uuid::Uuid;
 
 pub struct PostgresToDoItemRepository {
-    pool: Data<DbPool>,
+    pool: Arc<DbPool>,
 }
 
 #[derive(Queryable)]
@@ -90,7 +90,7 @@ impl From<&ToDoItem> for NewDbToDoItem {
 }
 
 impl PostgresToDoItemRepository {
-    pub fn new(pool: &Data<DbPool>) -> Self {
+    pub fn new(pool: &Arc<DbPool>) -> Self {
         Self { pool: pool.clone() }
     }
 

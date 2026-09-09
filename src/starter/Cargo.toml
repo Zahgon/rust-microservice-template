@@ -6,18 +6,17 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-actix-web.workspace = true
+axum.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 reqwest.workspace = true
 dotenv.workspace = true
 utoipa.workspace = true
-utoipa-actix-web.workspace = true
 utoipa-swagger-ui.workspace = true
 chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tracing-actix-web.workspace = true
+tower-http.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 uuid.workspace = true
@@ -31,6 +30,7 @@ testcontainers.workspace = true
 testcontainers-modules.workspace = true
 ctor.workspace = true
 serial_test.workspace = true
+tower.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true

@@ -1,16 +1,23 @@
-use actix_web::error::{JsonPayloadError, QueryPayloadError};
-use actix_web::web::Json;
-use actix_web::{HttpResponse, ResponseError};
 use application::ApplicationError;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::response::{IntoResponse, Response};
 use http::StatusCode as HttpStatusCode;
-use problem_details::{JsonProblemDetails, ProblemDetails};
+use problem_details::ProblemDetails;
 use serde_json::Error as SerdeError;
 use std::fmt::{Display, Formatter};
+use tracing::warn;
 use validator::ValidationErrors;
 
 #[derive(Debug)]
 pub enum HttpError {
     Problem(ProblemDetails),
+    /// A bare status code with a plain-text body.
+    ///
+    /// Needed because not every failure in the original was rendered as problem
+    /// details: Actix reported an unparseable path segment as a 404 whose body was
+    /// the raw deserialiser message, with no JSON envelope. Reproducing that shape
+    /// requires a response that bypasses ProblemDetails entirely.
+    PlainText(HttpStatusCode, String),
 }
 
 impl HttpError {
@@ -49,6 +56,14 @@ impl HttpError {
         )
     }
 
+    /// A 404 carrying the raw path-extraction message as plain text.
+    ///
+    /// Matches the original, where a malformed path parameter failed extraction
+    /// and surfaced as 404 Not Found rather than as a 400 with a JSON body.
+    pub fn path_not_found(detail: impl Into<String>) -> Self {
+        HttpError::PlainText(HttpStatusCode::NOT_FOUND, detail.into())
+    }
+
     pub fn unauthorized(detail: impl Into<String>) -> Self {
         HttpError::Problem(
             ProblemDetails::new()
@@ -65,12 +80,13 @@ impl Display for HttpError {
     }
 }
 
-impl ResponseError for HttpError {
-    fn error_response(&self) -> HttpResponse {
+impl IntoResponse for HttpError {
+    fn into_response(self) -> Response {
+        warn!("Error encountered while processing the incoming HTTP request: {self}");
+
         match self {
-            HttpError::Problem(problem) => HttpResponse::build(problem.status_code())
-                .content_type(JsonProblemDetails::<()>::CONTENT_TYPE)
-                .json(Json(problem)),
+            HttpError::Problem(problem) => problem.into_response(),
+            HttpError::PlainText(status, body) => (status, body).into_response(),
         }
     }
 }
@@ -87,14 +103,14 @@ impl From<ValidationErrors> for HttpError {
     }
 }
 
-impl From<JsonPayloadError> for HttpError {
-    fn from(err: JsonPayloadError) -> Self {
+impl From<JsonRejection> for HttpError {
+    fn from(err: JsonRejection) -> Self {
         HttpError::bad_request(err.to_string())
     }
 }
 
-impl From<QueryPayloadError> for HttpError {
-    fn from(err: QueryPayloadError) -> Self {
+impl From<QueryRejection> for HttpError {
+    fn from(err: QueryRejection) -> Self {
         HttpError::bad_request(err.to_string())
     }
 }
@@ -119,37 +135,37 @@ impl From<ApplicationError> for HttpError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix_web::body::to_bytes;
-    use actix_web::ResponseError;
+    use axum::body::to_bytes;
+    use axum::response::IntoResponse;
     use uuid::Uuid;
 
-    #[actix_web::test]
+    #[tokio::test]
     async fn maps_not_found_application_errors_to_404_problem_details() {
         let error = HttpError::from(ApplicationError::NotFound { id: Uuid::nil() });
 
-        let response = error.error_response();
+        let response = error.into_response();
 
         assert_eq!(
             response.status().as_u16(),
             HttpStatusCode::NOT_FOUND.as_u16()
         );
-        let body = to_bytes(response.into_body()).await.unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("\"status\":404"));
         assert!(body.contains("todo item with id"));
     }
 
-    #[actix_web::test]
+    #[tokio::test]
     async fn sanitizes_internal_application_errors() {
         let error = HttpError::from(ApplicationError::internal("db exploded"));
 
-        let response = error.error_response();
+        let response = error.into_response();
 
         assert_eq!(
             response.status().as_u16(),
             HttpStatusCode::INTERNAL_SERVER_ERROR.as_u16()
         );
-        let body = to_bytes(response.into_body()).await.unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("an internal error occurred"));
         assert!(!body.contains("db exploded"));
